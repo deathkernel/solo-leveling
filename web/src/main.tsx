@@ -29,8 +29,6 @@ function App() {
   const currentXp = useMemo(() => xpIntoLevel(player.totalXp, player.level), [player.totalXp, player.level]);
   const nextXp = xpForNextLevel(player.level);
   const xpPercent = Math.min(100, (currentXp / nextXp) * 100);
-  const rankNext = nextRank(player.rank);
-  const requirement = rankNext ? rankRequirement(rankNext) : null;
 
   async function commitPlayer(updated: Player, message: string, xp = 0, kind: Activity['kind'] = 'training') {
     setPlayer(updated); await savePlayer(updated);
@@ -74,7 +72,7 @@ function App() {
 
     <section className="grid-two">
       <section className="panel stats"><div className="section-title">ABILITY // CURRENT PARAMETERS</div><div className="stat-grid">{statLabels.map(([label, key]) => <div className="stat" key={key}><span>{label}</span><strong>{player.stats[key]}</strong></div>)}</div><div className="power-line"><span>COMBAT POWER</span><b>{totalStats(player.stats)}</b></div></section>
-      <section className="panel rank-panel"><div className="section-title">RANK PROGRESSION</div><div className="rank-track">{['E','D','C','B','A','S'].map((rank) => <span className={rank === player.rank ? 'active' : ''} key={rank}>{rank}</span>)}</div>{requirement ? <small>NEXT: {rankNext}-RANK · LVL {requirement.level} · {requirement.totalStats} TOTAL STATS</small> : <small>FINAL RANK ACHIEVED · MONARCH TIER</small>}</section>
+      <section className="panel rank-panel"><div className="section-title">CURRENT RANK</div><div className="current-rank-display"><span className="rank-symbol">{player.rank}</span><div><b>{player.rank}-RANK</b><small>STATUS: ACTIVE</small></div></div></section>
     </section>
 
     <section className="panel quest"><div className="section-title">DAILY QUEST // AUTO-GENERATED</div>{quests.map((quest) => <div className="quest-row" key={quest.id}><div><b>{quest.title}</b><small>{quest.description} · {quest.progress}/{quest.target}</small></div><button className={quest.completed ? 'complete' : 'quest-button'} disabled={quest.completed} onClick={() => completeQuest(quest.id)}>{quest.completed ? 'CLEARED' : `+${quest.xp} XP`}</button></div>)}<button className="system-button" onClick={quickTraining}>LOG TRAINING SESSION <span>+100 XP ›</span></button></section>
