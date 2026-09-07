@@ -1,52 +1,86 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
-import { loadPlayer, savePlayer } from './storage';
-import { DEFAULT_PLAYER, Player } from './types';
+import { addActivity, loadPlayer, loadQuests, loadRecentActivity, savePlayer, saveQuests } from './storage';
+import { Activity, DEFAULT_PLAYER, Player, Quest } from './types';
+import { canAdvanceRank, levelFromXp, nextRank, rankRequirement, totalStats, xpForNextLevel, xpIntoLevel } from './progression';
+import { applyQuestProgress, generateDailyQuests } from './questEngine';
 
-const stats = [['STR', 'strength'], ['AGI', 'agility'], ['END', 'endurance'], ['VIT', 'vitality'], ['DIS', 'discipline']] as const;
-
-function xpForNextLevel(level: number): number { return Math.floor(1000 * Math.pow(1.15, Math.max(level - 1, 0))); }
-function levelFromXp(totalXp: number): number {
-  let level = 1, remaining = Math.max(totalXp, 0);
-  while (remaining >= xpForNextLevel(level)) { remaining -= xpForNextLevel(level); level += 1; }
-  return level;
-}
+const statLabels = [['STR', 'strength'], ['AGI', 'agility'], ['END', 'endurance'], ['VIT', 'vitality'], ['DIS', 'discipline']] as const;
+const todayKey = () => new Date().toISOString().slice(0, 10);
 
 function App() {
   const [player, setPlayer] = useState<Player>(DEFAULT_PLAYER);
+  const [quests, setQuests] = useState<Quest[]>([]);
+  const [activity, setActivity] = useState<Activity[]>([]);
   const [ready, setReady] = useState(false);
+  const [notice, setNotice] = useState('SYSTEM ONLINE');
 
-  useEffect(() => { loadPlayer().then((saved) => { setPlayer(saved); setReady(true); }).catch(() => setReady(true)); }, []);
-
-  const currentLevelXp = useMemo(() => {
-    let xp = player.totalXp;
-    for (let level = 1; level < player.level; level++) xp -= xpForNextLevel(level);
-    return Math.max(xp, 0);
-  }, [player.totalXp, player.level]);
-  const nextXp = xpForNextLevel(player.level);
-  const xpPercent = Math.min((currentLevelXp / nextXp) * 100, 100);
-
-  async function awardTrainingXp() {
-    const totalXp = player.totalXp + 100;
-    const updated = { ...player, totalXp, level: levelFromXp(totalXp) };
-    setPlayer(updated);
-    await savePlayer(updated);
+  async function boot() {
+    const saved = await loadPlayer();
+    const key = todayKey();
+    let daily = await loadQuests(key);
+    if (!daily.length) { daily = generateDailyQuests(); await saveQuests(daily); }
+    setPlayer(saved); setQuests(daily); setActivity(await loadRecentActivity()); setReady(true);
   }
 
-  if (!ready) return <main className="boot-screen">INITIALIZING SYSTEM<span>_</span></main>;
-  return (
-    <main className="system-shell">
-      <div className="scanline" />
-      <header className="topbar"><span className="system-label">SYSTEM</span><span className="online"><i /> OFFLINE MODE</span></header>
-      <section className="hero panel">
-        <div><p className="eyebrow">PLAYER STATUS</p><h1>{player.name}</h1><div className="rank-row"><span className="rank">{player.rank}-RANK</span><span>LEVEL {String(player.level).padStart(2, '0')}</span></div></div>
-        <div className="xp-box"><div className="xp-head"><span>XP</span><b>{currentLevelXp.toLocaleString()} / {nextXp.toLocaleString()}</b></div><div className="bar"><span style={{ width: `${xpPercent}%` }} /></div><small>{player.totalXp.toLocaleString()} TOTAL XP</small></div>
-      </section>
-      <section className="stats panel"><div className="section-title">ABILITY</div><div className="stat-grid">{stats.map(([name, key]) => <div className="stat" key={name}><span>{name}</span><strong>{player.stats[key]}</strong></div>)}</div></section>
-      <section className="quest panel"><div className="section-title">DAILY QUEST</div><div className="quest-row"><div><b>STRENGTH PROTOCOL</b><small>Complete your assigned training</small></div><span className="pending">PENDING</span></div><button className="system-button" onClick={awardTrainingXp}>COMPLETE TRAINING +100 XP <span>›</span></button></section>
-    </main>
-  );
+  useEffect(() => { boot().catch(() => setReady(true)); }, []);
+
+  const currentXp = useMemo(() => xpIntoLevel(player.totalXp, player.level), [player.totalXp, player.level]);
+  const nextXp = xpForNextLevel(player.level);
+  const xpPercent = Math.min(100, (currentXp / nextXp) * 100);
+  const rankNext = nextRank(player.rank);
+  const requirement = rankNext ? rankRequirement(rankNext) : null;
+
+  async function commitPlayer(updated: Player, message: string, xp = 0, kind: Activity['kind'] = 'training') {
+    setPlayer(updated); await savePlayer(updated);
+    const event: Activity = { id: `${Date.now()}-${Math.random()}`, timestamp: new Date().toISOString(), kind, label: message, xp };
+    await addActivity(event); setActivity((items) => [event, ...items].slice(0, 8)); setNotice(message);
+    window.setTimeout(() => setNotice('SYSTEM ONLINE'), 2200);
+  }
+
+  async function completeQuest(id: string) {
+    const quest = quests.find((item) => item.id === id); if (!quest || quest.completed) return;
+    const updatedQuest = applyQuestProgress(quest, quest.target);
+    const totalXp = player.totalXp + quest.xp;
+    const updated: Player = {
+      ...player, totalXp, level: levelFromXp(totalXp), streak: player.lastActiveDate === todayKey() ? player.streak : player.streak + 1,
+      lastActiveDate: todayKey(), updatedAt: new Date().toISOString(), stats: { ...player.stats, [quest.stat]: player.stats[quest.stat] + 1 },
+    };
+    const nextQuests = quests.map((item) => item.id === id ? updatedQuest : item);
+    setQuests(nextQuests); await saveQuests(nextQuests); await commitPlayer(updated, `QUEST CLEARED +${quest.xp} XP`, quest.xp, 'quest');
+    if (canAdvanceRank(updated.rank, updated.level, updated.stats)) {
+      const promoted = { ...updated, rank: nextRank(updated.rank)!, updatedAt: new Date().toISOString() };
+      await commitPlayer(promoted, `RANK UP // ${updated.rank} → ${promoted.rank}`, 0, 'rank-up');
+    }
+  }
+
+  async function quickTraining() {
+    const totalXp = player.totalXp + 100;
+    const updated: Player = { ...player, totalXp, level: levelFromXp(totalXp), lastActiveDate: todayKey(), streak: player.lastActiveDate === todayKey() ? player.streak : player.streak + 1, updatedAt: new Date().toISOString() };
+    await commitPlayer(updated, 'TRAINING LOGGED +100 XP', 100);
+  }
+
+  if (!ready) return <main className="boot-screen"><div>SYSTEM INITIALIZING</div><span>LOADING PLAYER DATA...</span></main>;
+
+  return <main className="system-shell">
+    <div className="scanline" />
+    <header className="topbar"><span className="system-label">SYSTEM // PERSONAL PROTOCOL</span><span className="online"><i /> {notice}</span></header>
+
+    <section className="hero panel">
+      <div><p className="eyebrow">PLAYER STATUS</p><h1>{player.name}</h1><div className="rank-row"><span className="rank">{player.rank}-RANK</span><span>LEVEL {String(player.level).padStart(2, '0')}</span><span>STREAK {player.streak}</span></div></div>
+      <div className="xp-box"><div className="xp-head"><span>EXPERIENCE</span><b>{currentXp.toLocaleString()} / {nextXp.toLocaleString()}</b></div><div className="bar"><span style={{ width: `${xpPercent}%` }} /></div><small>{player.totalXp.toLocaleString()} TOTAL XP</small></div>
+    </section>
+
+    <section className="grid-two">
+      <section className="panel stats"><div className="section-title">ABILITY // CURRENT PARAMETERS</div><div className="stat-grid">{statLabels.map(([label, key]) => <div className="stat" key={key}><span>{label}</span><strong>{player.stats[key]}</strong></div>)}</div><div className="power-line"><span>COMBAT POWER</span><b>{totalStats(player.stats)}</b></div></section>
+      <section className="panel rank-panel"><div className="section-title">RANK PROGRESSION</div><div className="rank-track">{['E','D','C','B','A','S'].map((rank) => <span className={rank === player.rank ? 'active' : ''} key={rank}>{rank}</span>)}</div>{requirement ? <small>NEXT: {rankNext}-RANK · LVL {requirement.level} · {requirement.totalStats} TOTAL STATS</small> : <small>FINAL RANK ACHIEVED · MONARCH TIER</small>}</section>
+    </section>
+
+    <section className="panel quest"><div className="section-title">DAILY QUEST // AUTO-GENERATED</div>{quests.map((quest) => <div className="quest-row" key={quest.id}><div><b>{quest.title}</b><small>{quest.description} · {quest.progress}/{quest.target}</small></div><button className={quest.completed ? 'complete' : 'quest-button'} disabled={quest.completed} onClick={() => completeQuest(quest.id)}>{quest.completed ? 'CLEARED' : `+${quest.xp} XP`}</button></div>)}<button className="system-button" onClick={quickTraining}>LOG TRAINING SESSION <span>+100 XP ›</span></button></section>
+
+    <section className="panel activity"><div className="section-title">SYSTEM LOG // RECENT EVENTS</div>{activity.length ? activity.map((event) => <div className="log" key={event.id}><span>{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><b>{event.label}</b><em>{event.kind.toUpperCase()}</em></div>) : <div className="empty">NO RECENT SYSTEM EVENTS</div>}</section>
+  </main>;
 }
 
 createRoot(document.getElementById('root')!).render(<App />);
