@@ -35,9 +35,20 @@ function openDb(): Promise<IDBDatabase> {
 export async function loadPlayer(): Promise<Player> {
   const db = await openDb();
   const result = await requestToPromise(db.transaction(STORES.player, 'readonly').objectStore(STORES.player).get(PLAYER_KEY));
-  if (result) return result as Player;
-  await savePlayer(DEFAULT_PLAYER);
-  return DEFAULT_PLAYER;
+  if (!result) {
+    await savePlayer(DEFAULT_PLAYER);
+    return DEFAULT_PLAYER;
+  }
+  const saved = result as Partial<Player>;
+  return {
+    ...DEFAULT_PLAYER,
+    ...saved,
+    stats: { ...DEFAULT_PLAYER.stats, ...(saved.stats ?? {}) },
+    hp: typeof saved.hp === 'number' ? saved.hp : DEFAULT_PLAYER.hp,
+    maxHp: typeof saved.maxHp === 'number' ? saved.maxHp : DEFAULT_PLAYER.maxHp,
+    dailyXpDate: saved.dailyXpDate ?? null,
+    dailyXpEarned: typeof saved.dailyXpEarned === 'number' ? saved.dailyXpEarned : 0,
+  };
 }
 
 export async function savePlayer(player: Player): Promise<void> {
