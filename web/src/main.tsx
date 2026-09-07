@@ -14,8 +14,9 @@ const statNames: Record<string, string> = { strength: 'STR', agility: 'AGI', end
 
 function dailyXp(player: Player, today: string): number { return player.dailyXpDate === today ? (player.dailyXpEarned ?? 0) : 0; }
 function normalizeDailyState(player: Player, today: string): Player {
-  if (player.dailyXpDate === today) return player;
-  return { ...player, dailyXpDate: today, dailyXpEarned: 0, hp: player.maxHp ?? 100, maxHp: player.maxHp ?? 100 };
+  if (player.dailyXpDate === today && player.completedWorkoutDate === today) return player;
+  if (player.dailyXpDate === today) return { ...player, completedWorkoutDate: today, completedWorkoutIds: player.completedWorkoutIds ?? [] };
+  return { ...player, dailyXpDate: today, dailyXpEarned: 0, hp: player.maxHp ?? 100, maxHp: player.maxHp ?? 100, completedWorkoutDate: today, completedWorkoutIds: [] };
 }
 function dayLabel(plan: BoxingDayPlan): string { return ['SUN','MON','TUE','WED','THU','FRI','SAT'][plan.day]; }
 
@@ -29,7 +30,9 @@ function App() {
 
   const today = todayKey();
   const plan = useMemo(() => todayBoxingPlan(new Date()), []);
-  const workoutDone = player.lastWorkoutDate === today;
+  const completedIds = player.completedWorkoutDate === today ? (player.completedWorkoutIds ?? []) : [];
+  const completedCount = plan.exercises.filter((exercise) => completedIds.includes(exercise.workoutId)).length;
+  const workoutDone = completedCount === plan.exercises.length;
   const earnedToday = dailyXp(player, today);
   const hp = player.hp ?? 100;
   const maxHp = player.maxHp ?? 100;
@@ -70,26 +73,52 @@ function App() {
     }
   }
 
-  async function completeDailyBoxing() {
-    if (workoutDone) { setNotice('TODAY\'S TRAINING ALREADY CLEARED'); return; }
+  async function completeWorkoutBlock(workoutId: string) {
+    if (completedIds.includes(workoutId)) return;
     if (hp <= 0) { setNotice('HP DEPLETED // RECOVERY REQUIRED'); return; }
-    const remainingXp = Math.max(0, DAILY_XP_CAP - earnedToday);
-    if (remainingXp <= 0) { setNotice('DAILY XP LIMIT REACHED'); return; }
 
-    let stats = player.stats;
-    let rawXp = 0;
-    for (const exercise of plan.exercises) {
-      const workout = workoutById(exercise.workoutId);
-      if (!workout) continue;
-      rawXp += Math.round(workout.xpPerUnit * exercise.target);
-      stats = applyStatDelta(stats, calculateStatGain(workout, exercise.target));
-    }
+    const exercise = plan.exercises.find((item) => item.workoutId === workoutId);
+    const workout = exercise ? workoutById(exercise.workoutId) : undefined;
+    if (!exercise || !workout) return;
+
+    const remainingXp = Math.max(0, DAILY_XP_CAP - earnedToday);
+    const rawXp = Math.round(workout.xpPerUnit * exercise.target);
     const awardedXp = Math.min(rawXp, remainingXp);
-    const hpCost = Math.min(70, Math.max(15, Math.round(plan.exercises.length * 5 + plan.day * 1)));
+    const nextStats = applyStatDelta(player.stats, calculateStatGain(workout, exercise.target));
+    const nextCompletedIds = [...completedIds, workoutId];
+    const nextCompletedCount = plan.exercises.filter((item) => nextCompletedIds.includes(item.workoutId)).length;
+    const protocolCleared = nextCompletedCount === plan.exercises.length;
+    const hpCost = Math.min(18, Math.max(3, Math.round(workout.difficulty * 5)));
     const totalXp = player.totalXp + awardedXp;
-    const updated: Player = { ...player, stats, totalXp, level: levelFromXp(totalXp), lastWorkoutDate: today, lastActiveDate: today, streak: player.lastActiveDate === today ? player.streak : player.streak + 1, hp: Math.max(0, hp - hpCost), maxHp, dailyXpDate: today, dailyXpEarned: earnedToday + awardedXp, updatedAt: new Date().toISOString() };
-    await commitPlayer(updated, `DAILY TRAINING COMPLETE +${awardedXp} XP`, awardedXp);
-    window.setTimeout(() => setNotice(`${plan.title} COMPLETE // PARAMETERS INCREASED`), 500);
+
+    const updated: Player = {
+      ...player,
+      stats: nextStats,
+      totalXp,
+      level: levelFromXp(totalXp),
+      lastActiveDate: today,
+      lastWorkoutDate: protocolCleared ? today : player.lastWorkoutDate,
+      streak: player.lastActiveDate === today ? player.streak : player.streak + 1,
+      hp: Math.max(0, hp - hpCost),
+      maxHp,
+      dailyXpDate: today,
+      dailyXpEarned: earnedToday + awardedXp,
+      completedWorkoutDate: today,
+      completedWorkoutIds: nextCompletedIds,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const label = protocolCleared
+      ? `BOXING PROTOCOL CLEARED +${awardedXp} XP`
+      : `${workout.name.toUpperCase()} COMPLETE +${awardedXp} XP`;
+    await commitPlayer(updated, label, awardedXp);
+
+    if (canAdvanceRank(updated.rank, updated.level, updated.stats)) {
+      const promoted = { ...updated, rank: nextRank(updated.rank)!, updatedAt: new Date().toISOString() };
+      await commitPlayer(promoted, `RANK UP // ${updated.rank} → ${promoted.rank}`, 0, 'rank-up');
+    } else if (protocolCleared) {
+      window.setTimeout(() => setNotice(`${plan.title} COMPLETE // PARAMETERS INCREASED`), 500);
+    }
   }
 
   if (!ready) return <main className="boot-screen"><div>SYSTEM INITIALIZING</div><span>LOADING PLAYER DATA...</span></main>;
@@ -114,9 +143,18 @@ function App() {
     <section className="system-window workout-window">
       <div className="window-title">[ {dayLabel(plan)} // TODAY'S BOXING PROTOCOL ]</div>
       <div className="workout-name">{plan.title}</div>
-      <div className="workout-meta">{plan.focus.toUpperCase()} · {plan.exercises.length} BLOCKS</div>
-      <div className="exercise-list">{plan.exercises.map((exercise) => { const item = workoutById(exercise.workoutId); return item ? <div className="exercise-row" key={exercise.workoutId}><span>{item.name}</span><b>{exercise.target} {item.unit}</b></div> : null; })}</div>
-      {!workoutDone ? <button className="complete-session" disabled={earnedToday >= DAILY_XP_CAP || hp <= 0} onClick={completeDailyBoxing}>COMPLETE DAILY TRAINING</button> : <div className="workout-cleared">✓ DAILY TRAINING CLEARED // RETURN TOMORROW</div>}
+      <div className="workout-meta">{plan.focus.toUpperCase()} · {completedCount}/{plan.exercises.length} CLEARED</div>
+      <div className="exercise-list">{plan.exercises.map((exercise) => {
+        const item = workoutById(exercise.workoutId);
+        if (!item) return null;
+        const cleared = completedIds.includes(exercise.workoutId);
+        return <div className={`exercise-row ${cleared ? 'exercise-cleared' : ''}`} key={exercise.workoutId}>
+          <div className="exercise-info"><span>{item.name}</span><small>{item.category.toUpperCase()} · {item.primaryStat.toUpperCase()}</small></div>
+          <b>{exercise.target} {item.unit}</b>
+          <button className={cleared ? 'exercise-complete cleared' : 'exercise-complete'} disabled={cleared || hp <= 0} onClick={() => completeWorkoutBlock(exercise.workoutId)}>{cleared ? 'CLEARED' : 'COMPLETE'}</button>
+        </div>;
+      })}</div>
+      {workoutDone && <div className="workout-cleared">✓ DAILY PROTOCOL CLEARED // RETURN TOMORROW</div>}
     </section>
 
     <div className="hud-actions"><button onClick={() => setShowStats((value) => !value)}>{showStats ? 'HIDE PARAMETERS' : 'VIEW PARAMETERS'}</button></div>
