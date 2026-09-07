@@ -3,11 +3,19 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { addActivity, loadPlayer, loadQuests, loadRecentActivity, savePlayer, saveQuests } from './storage';
 import { Activity, DEFAULT_PLAYER, Player, Quest } from './types';
-import { canAdvanceRank, levelFromXp, nextRank, xpForNextLevel, xpIntoLevel } from './progression';
+import { canAdvanceRank, levelFromXp, nextRank, totalStats, xpForNextLevel, xpIntoLevel } from './progression';
 import { applyQuestProgress, generateDailyQuests } from './questEngine';
+import { completeWorkout } from './domain/workoutService';
+import { WORKOUTS, WorkoutDefinition } from './domain/workouts';
 
-const statLabels = [['STR', 'strength'], ['AGI', 'agility'], ['END', 'endurance'], ['VIT', 'vitality'], ['DIS', 'discipline']] as const;
 const todayKey = () => new Date().toISOString().slice(0, 10);
+
+function dailyWorkout(dateKey: string): WorkoutDefinition {
+  const index = [...dateKey].reduce((sum, char) => sum + char.charCodeAt(0), 0) % WORKOUTS.length;
+  return WORKOUTS[index];
+}
+
+const statNames: Record<string, string> = { strength: 'STR', agility: 'AGI', endurance: 'END', vitality: 'VIT', discipline: 'DIS' };
 
 function App() {
   const [player, setPlayer] = useState<Player>(DEFAULT_PLAYER);
@@ -15,7 +23,12 @@ function App() {
   const [activity, setActivity] = useState<Activity[]>([]);
   const [ready, setReady] = useState(false);
   const [notice, setNotice] = useState('SYSTEM ONLINE');
-  const [view, setView] = useState<'none' | 'stats' | 'quest' | 'log'>('none');
+  const [showStats, setShowStats] = useState(false);
+  const [amount, setAmount] = useState('');
+
+  const today = todayKey();
+  const workout = useMemo(() => dailyWorkout(today), [today]);
+  const workoutDone = player.lastWorkoutDate === today;
 
   async function boot() {
     const saved = await loadPlayer();
@@ -30,7 +43,6 @@ function App() {
   const currentXp = useMemo(() => xpIntoLevel(player.totalXp, player.level), [player.totalXp, player.level]);
   const nextXp = xpForNextLevel(player.level);
   const xpPercent = Math.min(100, (currentXp / nextXp) * 100);
-  const currentQuest = quests.find((quest) => !quest.completed) ?? quests[0];
 
   async function commitPlayer(updated: Player, message: string, xp = 0, kind: Activity['kind'] = 'training') {
     setPlayer(updated); await savePlayer(updated);
@@ -43,7 +55,10 @@ function App() {
     const quest = quests.find((item) => item.id === id); if (!quest || quest.completed) return;
     const updatedQuest = applyQuestProgress(quest, quest.target);
     const totalXp = player.totalXp + quest.xp;
-    const updated: Player = { ...player, totalXp, level: levelFromXp(totalXp), streak: player.lastActiveDate === todayKey() ? player.streak : player.streak + 1, lastActiveDate: todayKey(), updatedAt: new Date().toISOString(), stats: { ...player.stats, [quest.stat]: player.stats[quest.stat] + 1 } };
+    const updated: Player = {
+      ...player, totalXp, level: levelFromXp(totalXp), streak: player.lastActiveDate === today ? player.streak : player.streak + 1,
+      lastActiveDate: today, updatedAt: new Date().toISOString(), stats: { ...player.stats, [quest.stat]: player.stats[quest.stat] + 1 },
+    };
     const nextQuests = quests.map((item) => item.id === id ? updatedQuest : item);
     setQuests(nextQuests); await saveQuests(nextQuests); await commitPlayer(updated, `QUEST CLEARED +${quest.xp} XP`, quest.xp, 'quest');
     if (canAdvanceRank(updated.rank, updated.level, updated.stats)) {
@@ -52,42 +67,67 @@ function App() {
     }
   }
 
-  async function quickTraining() {
-    const totalXp = player.totalXp + 100;
-    const updated: Player = { ...player, totalXp, level: levelFromXp(totalXp), lastActiveDate: todayKey(), streak: player.lastActiveDate === todayKey() ? player.streak : player.streak + 1, updatedAt: new Date().toISOString() };
-    await commitPlayer(updated, 'TRAINING LOGGED +100 XP', 100);
+  async function logWorkout() {
+    if (workoutDone) { setNotice('WORKOUT ALREADY CLEARED TODAY'); return; }
+    const value = Number(amount);
+    if (!Number.isFinite(value) || value <= 0) { setNotice('ENTER A VALID WORKOUT AMOUNT'); return; }
+    const result = completeWorkout(player, workout, value);
+    const updated: Player = {
+      ...result.player,
+      level: levelFromXp(result.player.totalXp),
+      lastWorkoutDate: today,
+      lastActiveDate: today,
+      streak: player.lastActiveDate === today ? player.streak : player.streak + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    await commitPlayer(updated, `WORKOUT COMPLETE +${result.xpGained} XP`, result.xpGained);
+    setAmount('');
+    const gains = Object.entries(result.statGain).map(([key, value]) => `${statNames[key]} +${value}`).join('  ');
+    window.setTimeout(() => setNotice(gains || 'TRAINING COMPLETE'), 400);
   }
 
-  if (!ready) return <main className="boot-screen"><div>[ SYSTEM ]</div><span>INITIALIZING PLAYER DATA...</span></main>;
+  if (!ready) return <main className="boot-screen"><div>SYSTEM INITIALIZING</div><span>LOADING PLAYER DATA...</span></main>;
 
   return <main className="system-shell">
     <div className="scanline" />
-    <header className="system-header"><span className="system-mark">[ SYSTEM ]</span><span className="system-state"><i /> {notice}</span></header>
+    <header className="topbar"><span className="system-label">[ SYSTEM ]</span><span className="online"><i /> {notice}</span></header>
 
     <section className="hud">
-      <div className="hud-corner corner-tl" /><div className="hud-corner corner-tr" /><div className="hud-corner corner-bl" /><div className="hud-corner corner-br" />
-      <div className="player-block"><span className="label">PLAYER</span><h1>{player.name}</h1></div>
-      <div className="level-block"><span className="label">LEVEL</span><strong>{String(player.level).padStart(2, '0')}</strong></div>
-      <div className="rank-block"><span className="label">RANK</span><strong>{player.rank}</strong></div>
-      <div className="xp-block"><div className="xp-meta"><span>XP</span><span>{currentXp.toLocaleString()} / {nextXp.toLocaleString()}</span></div><div className="xp-bar"><span style={{ width: `${xpPercent}%` }} /></div></div>
-      <div className="hp-block"><div><span className="label">HP</span><b>100 / 100</b></div><div className="hp-bar"><span /></div></div>
-      <div className="streak-block"><span className="label">STREAK</span><strong>{player.streak}</strong></div>
+      <p className="eyebrow">PLAYER</p>
+      <h1>{player.name}</h1>
+      <div className="level-line"><span>LEVEL {String(player.level).padStart(2, '0')}</span><b>{player.rank}-RANK</b></div>
+
+      <div className="xp-box"><div className="xp-head"><span>XP</span><b>{currentXp.toLocaleString()} / {nextXp.toLocaleString()}</b></div><div className="bar"><span style={{ width: `${xpPercent}%` }} /></div></div>
+      <div className="hp-line"><span>HP</span><b>100 / 100</b></div>
+      <div className="streak-line"><span>STREAK</span><b>{player.streak} DAYS</b></div>
     </section>
 
-    <section className="quest-hud">
-      <div className="quest-heading"><span className="label">DAILY QUEST</span><span>ACTIVE</span></div>
-      {currentQuest ? <><h2>{currentQuest.title}</h2><p>{currentQuest.description}</p><div className="quest-progress"><span style={{ width: `${Math.min(100, (currentQuest.progress / currentQuest.target) * 100)}%` }} /></div><div className="quest-foot"><span>{currentQuest.progress} / {currentQuest.target}</span><span>+{currentQuest.xp} XP</span></div></> : <p>NO ACTIVE QUEST</p>}
-      <button className="primary-button" onClick={() => setView('quest')}>VIEW QUEST <span>›</span></button>
+    <section className="system-window">
+      <div className="window-title">[ DAILY QUEST ]</div>
+      {quests.slice(0, 1).map((quest) => <div className="quest-row" key={quest.id}><div><b>{quest.title}</b><small>{quest.description}</small></div><button className={quest.completed ? 'complete' : 'quest-button'} disabled={quest.completed} onClick={() => completeQuest(quest.id)}>{quest.completed ? 'CLEARED' : `+${quest.xp} XP`}</button></div>)}
     </section>
 
-    <div className="hud-actions"><button onClick={() => setView('stats')}>STATUS</button><button onClick={quickTraining}>TRAIN</button><button onClick={() => setView('log')}>SYSTEM LOG</button></div>
-    <footer className="system-footer">SYSTEM // PERSONAL PROTOCOL</footer>
+    <section className="system-window workout-window">
+      <div className="window-title">[ TODAY'S WORKOUT ]</div>
+      <div className="workout-name">{workout.name}</div>
+      <div className="workout-meta">{workout.category.toUpperCase()} · {workout.primaryStat.toUpperCase()} · DIFFICULTY {workout.difficulty}/5</div>
+      {!workoutDone ? <div className="workout-action"><input type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={`AMOUNT (${workout.unit.toUpperCase()})`} /><button onClick={logWorkout}>COMPLETE</button></div> : <div className="workout-cleared">✓ WORKOUT CLEARED FOR TODAY</div>}
+    </section>
 
-    {view !== 'none' && <div className="overlay" onClick={() => setView('none')}><section className="modal" onClick={(event) => event.stopPropagation()}><button className="close" onClick={() => setView('none')}>×</button>
-      {view === 'stats' && <><span className="label">PLAYER STATUS</span><h2>ABILITY PARAMETERS</h2><div className="modal-stats">{statLabels.map(([label, key]) => <div key={key}><span>{label}</span><strong>{player.stats[key]}</strong></div>)}</div></>}
-      {view === 'quest' && <><span className="label">DAILY QUEST</span><h2>QUEST LIST</h2><div className="quest-list">{quests.map((quest) => <div className="quest-item" key={quest.id}><div><b>{quest.title}</b><small>{quest.description}</small></div><button disabled={quest.completed} onClick={() => completeQuest(quest.id)}>{quest.completed ? 'CLEARED' : `+${quest.xp} XP`}</button></div>)}</div></>}
-      {view === 'log' && <><span className="label">SYSTEM LOG</span><h2>RECENT EVENTS</h2><div className="log-list">{activity.length ? activity.map((event) => <div key={event.id}><time>{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time><span>{event.label}</span></div>) : <p>NO RECENT EVENTS</p>}</div></>}
-    </section></div>}
+    <div className="hud-actions">
+      <button onClick={() => setShowStats((value) => !value)}>{showStats ? 'HIDE PARAMETERS' : 'VIEW PARAMETERS'}</button>
+    </div>
+
+    {showStats && <section className="system-window parameters">
+      <div className="window-title">[ PARAMETERS ]</div>
+      <div className="parameter-grid">{Object.entries(player.stats).map(([key, value]) => <div key={key}><span>{statNames[key]}</span><b>{value}</b></div>)}</div>
+      <div className="power-line"><span>TOTAL PARAMETERS</span><b>{totalStats(player.stats)}</b></div>
+    </section>}
+
+    <section className="system-window log-window">
+      <div className="window-title">[ SYSTEM LOG ]</div>
+      {activity.slice(0, 4).map((event) => <div className="log" key={event.id}><span>{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><b>{event.label}</b></div>)}
+    </section>
   </main>;
 }
 
