@@ -13,6 +13,7 @@ export type Player = {
   stats: Stats;
   streak: number;
   lastActiveDate: string | null;
+  lastWorkoutDate?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -42,5 +43,5 @@ const now = new Date().toISOString();
 export const DEFAULT_PLAYER: Player = {
   id: 'main', name: 'PLAYER', rank: 'E', level: 1, totalXp: 0,
   stats: { strength: 10, agility: 10, endurance: 10, vitality: 10, discipline: 10 },
-  streak: 0, lastActiveDate: null, createdAt: now, updatedAt: now,
+  streak: 0, lastActiveDate: null, lastWorkoutDate: null, createdAt: now, updatedAt: now,
 };
