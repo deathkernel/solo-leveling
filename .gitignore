@@ -1,0 +1,29 @@
+# Local dependencies and build output
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Environment files
+.env
+.env.*
+!.env.example
+web/.env
+web/.env.*
+!web/.env.example
+
+# Editor / OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Legacy Android / Gradle files if present locally
+.gradle/
+build/
+app/
+gradle/
+*.gradle
+*.gradle.kts
+gradlew
+gradlew.bat
+local.properties
