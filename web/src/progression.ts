@@ -1,6 +1,9 @@
 import { Rank, Stats } from './types';
 
 export const RANK_ORDER: Rank[] = ['E', 'D', 'C', 'B', 'A', 'S'];
+
+// Rank and level remain separate. S-rank is designed as a long-term milestone:
+// at one meaningful workout per day, the progression curve targets roughly five years.
 export const RANK_REQUIREMENTS: Record<Exclude<Rank, 'E'>, { level: number; totalStats: number }> = {
   D: { level: 10, totalStats: 60 },
   C: { level: 20, totalStats: 90 },
@@ -9,14 +12,21 @@ export const RANK_REQUIREMENTS: Record<Exclude<Rank, 'E'>, { level: number; tota
   S: { level: 50, totalStats: 220 },
 };
 
+const XP_PER_DAY_TARGET = 1000;
+const S_RANK_DAYS = 365 * 5;
+export const S_RANK_TARGET_XP = XP_PER_DAY_TARGET * S_RANK_DAYS;
+
+// Total XP required from one level to the next. The quadratic curve starts
+// gently and becomes progressively harder so the final climb is substantial.
 export function xpForNextLevel(level: number): number {
-  return Math.floor(1000 * Math.pow(1.15, Math.max(level - 1, 0)));
+  const safeLevel = Math.max(1, Math.floor(level));
+  return 120 + 45 * safeLevel * safeLevel;
 }
 
 export function levelFromXp(totalXp: number): number {
   let level = 1;
-  let remaining = Math.max(0, totalXp);
-  while (remaining >= xpForNextLevel(level)) {
+  let remaining = Math.max(0, Math.floor(totalXp));
+  while (level < 50 && remaining >= xpForNextLevel(level)) {
     remaining -= xpForNextLevel(level);
     level += 1;
   }
@@ -25,8 +35,8 @@ export function levelFromXp(totalXp: number): number {
 
 export function xpIntoLevel(totalXp: number, level: number): number {
   let spent = 0;
-  for (let current = 1; current < level; current += 1) spent += xpForNextLevel(current);
-  return Math.max(0, totalXp - spent);
+  for (let current = 1; current < Math.max(1, level); current += 1) spent += xpForNextLevel(current);
+  return Math.max(0, Math.floor(totalXp) - spent);
 }
 
 export function totalStats(stats: Stats): number {
