@@ -27,6 +27,7 @@ function App() {
   const [ready, setReady] = useState(false);
   const [notice, setNotice] = useState('SYSTEM ONLINE');
   const [showStats, setShowStats] = useState(false);
+  const [reward, setReward] = useState<{ xp: number; stat: string; gain: number; name: string } | null>(null);
 
   const today = todayKey();
   const plan = useMemo(() => todayBoxingPlan(new Date()), []);
@@ -62,11 +63,13 @@ function App() {
     const quest = quests.find((item) => item.id === id); if (!quest || quest.completed) return;
     const remainingXp = Math.max(0, DAILY_XP_CAP - earnedToday);
     if (remainingXp <= 0) { setNotice('DAILY XP LIMIT REACHED'); return; }
-    const reward = Math.min(quest.xp, remainingXp);
-    const totalXp = player.totalXp + reward;
-    const updated: Player = { ...player, totalXp, level: levelFromXp(totalXp), dailyXpDate: today, dailyXpEarned: earnedToday + reward, streak: player.lastActiveDate === today ? player.streak : player.streak + 1, lastActiveDate: today, updatedAt: new Date().toISOString(), stats: { ...player.stats, [quest.stat]: player.stats[quest.stat] + 1 } };
+    const rewardXp = Math.min(quest.xp, remainingXp);
+    const totalXp = player.totalXp + rewardXp;
+    const updated: Player = { ...player, totalXp, level: levelFromXp(totalXp), dailyXpDate: today, dailyXpEarned: earnedToday + rewardXp, streak: player.lastActiveDate === today ? player.streak : player.streak + 1, lastActiveDate: today, updatedAt: new Date().toISOString(), stats: { ...player.stats, [quest.stat]: player.stats[quest.stat] + 1 } };
     const nextQuests = quests.map((item) => item.id === id ? applyQuestProgress(quest, quest.target) : item);
-    setQuests(nextQuests); await saveQuests(nextQuests); await commitPlayer(updated, `QUEST CLEARED +${reward} XP`, reward, 'quest');
+    setQuests(nextQuests); await saveQuests(nextQuests); await commitPlayer(updated, `QUEST CLEARED +${rewardXp} XP`, rewardXp, 'quest');
+    setReward({ xp: rewardXp, stat: statNames[quest.stat], gain: 1, name: quest.title });
+    window.setTimeout(() => setReward(null), 2300);
     if (canAdvanceRank(updated.rank, updated.level, updated.stats)) {
       const promoted = { ...updated, rank: nextRank(updated.rank)!, updatedAt: new Date().toISOString() };
       await commitPlayer(promoted, `RANK UP // ${updated.rank} → ${promoted.rank}`, 0, 'rank-up');
@@ -76,7 +79,6 @@ function App() {
   async function completeWorkoutBlock(workoutId: string) {
     if (completedIds.includes(workoutId)) return;
     if (hp <= 0) { setNotice('HP DEPLETED // RECOVERY REQUIRED'); return; }
-
     const exercise = plan.exercises.find((item) => item.workoutId === workoutId);
     const workout = exercise ? workoutById(exercise.workoutId) : undefined;
     if (!exercise || !workout) return;
@@ -84,34 +86,20 @@ function App() {
     const remainingXp = Math.max(0, DAILY_XP_CAP - earnedToday);
     const rawXp = Math.round(workout.xpPerUnit * exercise.target);
     const awardedXp = Math.min(rawXp, remainingXp);
-    const nextStats = applyStatDelta(player.stats, calculateStatGain(workout, exercise.target));
+    const statDelta = calculateStatGain(workout, exercise.target);
+    const nextStats = applyStatDelta(player.stats, statDelta);
     const nextCompletedIds = [...completedIds, workoutId];
     const nextCompletedCount = plan.exercises.filter((item) => nextCompletedIds.includes(item.workoutId)).length;
     const protocolCleared = nextCompletedCount === plan.exercises.length;
     const hpCost = Math.min(18, Math.max(3, Math.round(workout.difficulty * 5)));
     const totalXp = player.totalXp + awardedXp;
+    const statGain = statDelta[workout.primaryStat] ?? 0;
 
-    const updated: Player = {
-      ...player,
-      stats: nextStats,
-      totalXp,
-      level: levelFromXp(totalXp),
-      lastActiveDate: today,
-      lastWorkoutDate: protocolCleared ? today : player.lastWorkoutDate,
-      streak: player.lastActiveDate === today ? player.streak : player.streak + 1,
-      hp: Math.max(0, hp - hpCost),
-      maxHp,
-      dailyXpDate: today,
-      dailyXpEarned: earnedToday + awardedXp,
-      completedWorkoutDate: today,
-      completedWorkoutIds: nextCompletedIds,
-      updatedAt: new Date().toISOString(),
-    };
-
-    const label = protocolCleared
-      ? `BOXING PROTOCOL CLEARED +${awardedXp} XP`
-      : `${workout.name.toUpperCase()} COMPLETE +${awardedXp} XP`;
+    const updated: Player = { ...player, stats: nextStats, totalXp, level: levelFromXp(totalXp), lastActiveDate: today, lastWorkoutDate: protocolCleared ? today : player.lastWorkoutDate, streak: player.lastActiveDate === today ? player.streak : player.streak + 1, hp: Math.max(0, hp - hpCost), maxHp, dailyXpDate: today, dailyXpEarned: earnedToday + awardedXp, completedWorkoutDate: today, completedWorkoutIds: nextCompletedIds, updatedAt: new Date().toISOString() };
+    const label = protocolCleared ? `BOXING PROTOCOL CLEARED +${awardedXp} XP` : `${workout.name.toUpperCase()} COMPLETE +${awardedXp} XP`;
     await commitPlayer(updated, label, awardedXp);
+    setReward({ xp: awardedXp, stat: statNames[workout.primaryStat], gain: statGain, name: workout.name });
+    window.setTimeout(() => setReward(null), 2300);
 
     if (canAdvanceRank(updated.rank, updated.level, updated.stats)) {
       const promoted = { ...updated, rank: nextRank(updated.rank)!, updatedAt: new Date().toISOString() };
@@ -125,38 +113,11 @@ function App() {
 
   return <main className="system-shell">
     <div className="scanline" />
+    {reward && <div className="reward-overlay" role="status"><div className="reward-card"><span>[ SYSTEM ]</span><strong>PROTOCOL COMPLETE</strong><b className="reward-xp">+{reward.xp} XP</b><div>{reward.stat} <em>+{reward.gain}</em></div><small>{reward.name.toUpperCase()}</small></div></div>}
     <header className="topbar"><span className="system-label">[ SYSTEM ]</span><span className="online"><i /> {notice}</span></header>
-
-    <section className="hud">
-      <p className="eyebrow">PLAYER</p><h1>{player.name}</h1>
-      <div className="level-line"><span>LEVEL {String(player.level).padStart(2, '0')}</span><b>{player.rank}-RANK</b></div>
-      <div className="xp-box"><div className="xp-head"><span>XP</span><b>{currentXp.toLocaleString()} / {nextXp.toLocaleString()}</b></div><div className="bar"><span style={{ width: `${xpPercent}%` }} /></div></div>
-      <div className="hp-line"><span>HP</span><b>{hp} / {maxHp}</b></div>
-      <div className="streak-line"><span>STREAK</span><b>{player.streak} DAYS</b></div>
-    </section>
-
-    <section className="system-window">
-      <div className="window-title">[ DAILY QUEST ]</div>
-      {quests.slice(0, 1).map((quest) => <div className="quest-row" key={quest.id}><div><b>{quest.title}</b><small>{quest.description}</small></div><button className={quest.completed ? 'complete' : 'quest-button'} disabled={quest.completed || earnedToday >= DAILY_XP_CAP} onClick={() => completeQuest(quest.id)}>{quest.completed ? 'CLEARED' : `+${Math.min(quest.xp, DAILY_XP_CAP - earnedToday)} XP`}</button></div>)}
-    </section>
-
-    <section className="system-window workout-window">
-      <div className="window-title">[ {dayLabel(plan)} // TODAY'S BOXING PROTOCOL ]</div>
-      <div className="workout-name">{plan.title}</div>
-      <div className="workout-meta">{plan.focus.toUpperCase()} · {completedCount}/{plan.exercises.length} CLEARED</div>
-      <div className="exercise-list">{plan.exercises.map((exercise) => {
-        const item = workoutById(exercise.workoutId);
-        if (!item) return null;
-        const cleared = completedIds.includes(exercise.workoutId);
-        return <div className={`exercise-row ${cleared ? 'exercise-cleared' : ''}`} key={exercise.workoutId}>
-          <div className="exercise-info"><span>{item.name}</span><small>{item.category.toUpperCase()} · {item.primaryStat.toUpperCase()}</small></div>
-          <b>{exercise.target} {item.unit}</b>
-          <button className={cleared ? 'exercise-complete cleared' : 'exercise-complete'} disabled={cleared || hp <= 0} onClick={() => completeWorkoutBlock(exercise.workoutId)}>{cleared ? 'CLEARED' : 'COMPLETE'}</button>
-        </div>;
-      })}</div>
-      {workoutDone && <div className="workout-cleared">✓ DAILY PROTOCOL CLEARED // RETURN TOMORROW</div>}
-    </section>
-
+    <section className="hud"><p className="eyebrow">PLAYER</p><h1>{player.name}</h1><div className="level-line"><span>LEVEL {String(player.level).padStart(2, '0')}</span><b>{player.rank}-RANK</b></div><div className="xp-box"><div className="xp-head"><span>XP</span><b>{currentXp.toLocaleString()} / {nextXp.toLocaleString()}</b></div><div className="bar"><span style={{ width: `${xpPercent}%` }} /></div></div><div className="hp-line"><span>HP</span><b>{hp} / {maxHp}</b></div><div className="streak-line"><span>STREAK</span><b>{player.streak} DAYS</b></div></section>
+    <section className="system-window"><div className="window-title">[ DAILY QUEST ]</div>{quests.slice(0, 1).map((quest) => <div className="quest-row" key={quest.id}><div><b>{quest.title}</b><small>{quest.description}</small></div><button className={quest.completed ? 'complete' : 'quest-button'} disabled={quest.completed || earnedToday >= DAILY_XP_CAP} onClick={() => completeQuest(quest.id)}>{quest.completed ? 'CLEARED' : `+${Math.min(quest.xp, DAILY_XP_CAP - earnedToday)} XP`}</button></div>)}</section>
+    <section className="system-window workout-window"><div className="window-title">[ {dayLabel(plan)} // TODAY'S BOXING PROTOCOL ]</div><div className="workout-name">{plan.title}</div><div className="workout-meta">{plan.focus.toUpperCase()} · {completedCount}/{plan.exercises.length} CLEARED</div><div className="protocol-bar"><span style={{ width: `${(completedCount / plan.exercises.length) * 100}%` }} /></div><div className="exercise-list">{plan.exercises.map((exercise) => { const item = workoutById(exercise.workoutId); if (!item) return null; const cleared = completedIds.includes(exercise.workoutId); return <div className={`exercise-row ${cleared ? 'exercise-cleared' : ''}`} key={exercise.workoutId}><div className="exercise-info"><span>{item.name}</span><small>{item.category.toUpperCase()} · {item.primaryStat.toUpperCase()}</small></div><b>{exercise.target} {item.unit}</b><button className={cleared ? 'exercise-complete cleared' : 'exercise-complete'} disabled={cleared || hp <= 0} onClick={() => completeWorkoutBlock(exercise.workoutId)}>{cleared ? 'CLEARED' : 'COMPLETE'}</button></div>; })}</div>{workoutDone && <div className="workout-cleared">✓ DAILY PROTOCOL CLEARED // RETURN TOMORROW</div>}</section>
     <div className="hud-actions"><button onClick={() => setShowStats((value) => !value)}>{showStats ? 'HIDE PARAMETERS' : 'VIEW PARAMETERS'}</button></div>
     {showStats && <section className="system-window parameters"><div className="window-title">[ PARAMETERS ]</div><div className="parameter-grid">{Object.entries(player.stats).map(([key, value]) => <div key={key}><span>{statNames[key]}</span><b>{value}</b></div>)}</div><div className="power-line"><span>TOTAL PARAMETERS</span><b>{totalStats(player.stats)}</b></div></section>}
     <section className="system-window log-window"><div className="window-title">[ SYSTEM LOG ]</div>{activity.slice(0, 4).map((event) => <div className="log" key={event.id}><span>{new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><b>{event.label}</b></div>)}</section>
