@@ -8,8 +8,11 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PlayerDao {
-    @Query("SELECT * FROM player WHERE id = 1")
+    @Query("SELECT * FROM player WHERE id = 1 LIMIT 1")
     fun observePlayer(): Flow<PlayerEntity?>
+
+    @Query("SELECT * FROM player WHERE id = 1 LIMIT 1")
+    suspend fun getPlayer(): PlayerEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun savePlayer(player: PlayerEntity)
